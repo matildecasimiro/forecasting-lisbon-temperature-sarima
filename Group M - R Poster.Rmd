@@ -1,0 +1,274 @@
+---
+title: |
+  LISBON TEMPERATURE FORECASTING:
+  Applying the Box-Jenkins Methodology
+author:
+  - name: Duarte Carvalho
+  - name: Matilde Casimiro
+  - name: Laura Matias
+affiliation: 
+  address: Forecasting Methods | Final Project
+
+column_numbers: 3
+author_textsize: '50pt'
+title_textsize: '70pt'
+
+output: 
+  posterdown::posterdown_html:
+    self_contained: true
+
+knit: pagedown::chrome_print
+primary_colour: '#FFA500'
+secondary_colour: '#FFA500'
+accent_colour: '#FFA500'
+columnline_width: '0.3mm'  
+columnline_style: 'dashed'  
+title_textcol: '#FFFFFF'   
+author_textcol: '#FFFFFF'  
+affiliation_textcol: '#FFFFFF'   
+body_textsize: '45px'
+font_family: 'Cabin'
+titletext_fontfamily: 'Cabin'
+titlebox_borderwidth: '0.5cm'
+titlebox_bordercol: '#FFA500'  
+body_textcol: '#FFFFFF'   
+sectitle2_textcol: '#FFFFFF'   
+logoleft_name: C:/Users/dacar/OneDrive - NOVAIMS/Ambiente de Trabalho/logo_white.png
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+```
+
+# Introduction
+
+Lisbon, the capital of Portugal, experiences a diverse array of climatic changes throughout the year, significantly impacting its urban lifestyle and economic sectors. This study investigates the temperature trends in Lisbon from January 1995 to May 2020, employing the Box-Jenkins methodology — a robust approach for time series analysis and forecasting. Through meticulous analysis, the aim is to uncover seasonal patterns and accurately predict future climatic tendencies.
+
+```{r include = FALSE}
+
+# Loading the necessary packages
+
+library(fpp3)
+library(urca)
+library(readr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+
+# Importing the data and selecting the desired columns
+
+temp_city <- read_csv("city_temperature.csv")
+
+temp_lisbon <- temp_city %>%
+  filter(City == "Lisbon") %>%
+  group_by(Year, Month) %>%
+  summarise(AvgTemperature = mean(AvgTemperature, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(AvgTemperatureC = (AvgTemperature - 32) * 5 / 9) %>%  # Convert to Celsius (Celsius=(Fahrenheit−32)× 9/5)
+  select(Year, Month, AvgTemperatureC)
+
+# Convert data into a tsibble
+
+lisbon_ts <- temp_lisbon %>%
+  mutate(Date = yearmonth(paste(Year, Month, sep = "-"))) %>%
+  as_tsibble(index = Date) %>%
+  select(Date, AvgTemperatureC)
+
+```
+
+After transforming the data into a tsibble object, an initial graph was created to visualize temperature patterns and trends. The analysis reveals a clear seasonal pattern, with temperatures rising during the warm summers and dropping in the cool winters, ranging from about 5°C to 25°C. Interestingly, the long-term data does not show a significant trend towards getting warmer or cooler, indicating a stable climate over this period.
+
+```{r temp-plot, out.width='95%', fig.align='center', fig.cap = "Average Temperature by Month in Lisbon", fig.height = 4 }
+
+lisbon_ts %>% 
+  ggplot(aes(y=AvgTemperatureC, x=Date))+
+  geom_line(color='black') + labs(x= 'Months [1M]', y= 'Average Temperature (\u00B0C)') + theme_minimal()
+
+```
+
+# Methodology
+
+```{r include = FALSE}
+
+# Dividing the data into training and test sets
+
+# Training set: January 1995 to December 2017
+# Test set: January 2018 to May 2020
+
+temp_train <- lisbon_ts %>% filter(year(Date) <= 2017)
+temp_test <- lisbon_ts %>% filter(year(Date) > 2017)
+
+# Performing the Augmented Dickey-Fuller (ADF) test to assess stationarity at a 5% significance level
+
+summary(ur.df(na.omit(temp_train$AvgTemperatureC), type = c("none"), lags = 22))
+
+# Since the series remains non-stationary, a seasonal difference is taken
+
+temp_train <- temp_train %>%
+  mutate(seasonal_diff = difference(AvgTemperatureC, 12)) %>% na.omit()
+
+summary(ur.df(na.omit(temp_train$seasonal_diff), type = c("none"), lags = 23))
+
+# With the series now stationary, an in-depth examination of the Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) follows
+
+```
+
+For validation purposes, the data was partitioned into two distinct subsets: the training set, spanning from January 1995 to December 2017, and the test set, encompassing the period from January 2018 to May 2020. Prior to partitioning, an **Augmented Dickey-Fuller (ADF) Test** was conducted to evaluate the stationarity of the time series. The results confirmed the non-stationary nature of the data. To address this issue, seasonal differencing was employed, resulting in a rapid decline in autocorrelation, ultimately stabilizing at zero after the 23rd lag.
+
+Following this, the Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) plots were analyzed to identify potential candidate models. The ACF exhibited prominent spikes at lag 1 and seasonal lag 12, indicating potential seasonal and non-seasonal moving average components. Simultaneously, the PACF displayed significant spikes at lag 1 and seasonal lags 12, 24, and 36, suggesting potential seasonal and non-seasonal autoregressive components.
+
+```{r acf-pacf, out.width='95%', fig.align='center', fig.cap = "ACF and PACF of the Seasonal Difference", fig.height = 5.5 }
+
+temp_train %>%
+  gg_tsdisplay(seasonal_diff, plot_type='partial', lag_max=36) + 
+  labs(x = 'Months [1M]', y='Average Temperature (\u00B0C)')
+
+```
+
+# Results
+
+```{r include = FALSE}
+
+# Fitting Candidate SARIMA Models Based on Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) analysis
+
+temp_fit <- temp_train %>%
+  model(
+    sarima100_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,0) + PDQ(0,1,1)),
+    sarima001_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(0,0,1) + PDQ(0,1,1)),
+    sarima100_110 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,0) + PDQ(1,1,0)),
+    sarima001_110 = ARIMA(AvgTemperatureC ~ 0 + pdq(0,0,1) + PDQ(1,1,0)),
+    sarima101_110 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,1) + PDQ(1,1,0)),
+    sarima100_111 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,0) + PDQ(1,1,1)),
+    sarima101_111 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,1) + PDQ(1,1,1)),
+    sarima002_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(0,0,2) + PDQ(0,1,1)),
+    sarima101_211 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,1) + PDQ(2,1,1))
+  )
+
+temp_fit %>%
+  glance()
+
+# sarima100_011
+
+temp_fit %>%
+  select(sarima100_011) %>%
+  gg_tsresiduals() + labs(title = "Residuals of SARIMA(1,0,0)(0,1,1) model", 
+                          x = 'Months [1M]') # White Noise
+
+temp_fit %>%
+  select(sarima100_011) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24) # No Autocorrelation in the residuals
+
+
+# sarima001_011
+
+temp_fit %>%
+  select(sarima001_011) %>%
+  gg_tsresiduals() + labs(title = "Residuals of SARIMA(0,0,1)(0,1,1) model", 
+                          x = 'Months [1M]') # White Noise
+
+temp_fit %>%
+  select(sarima001_011) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24) # No Autocorrelation in the residuals
+
+
+# sarima100_111
+
+temp_fit %>%
+  select(sarima100_111) %>%
+  gg_tsresiduals() + labs(title = "Residuals of SARIMA(1,0,0)(1,1,1) model", 
+                          x = 'Months [1M]') # White Noise
+
+
+temp_fit %>%
+  select(sarima100_111) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24) # No Autocorrelation in the residuals
+
+# sarima101_111   
+
+temp_fit %>%
+  select(sarima101_111) %>%
+  gg_tsresiduals() + labs(title = "Residuals of SARIMA(1,0,1)(1,1,1) model", 
+                          x = 'Months [1M]') # White Noise
+
+
+temp_fit %>%
+  select(sarima101_111) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24) # No Autocorrelation in the residuals
+
+
+# sarima002_011   
+
+temp_fit %>%
+  select(sarima002_011) %>%
+  gg_tsresiduals() + labs(title = "Residuals of SARIMA(0,0,2)(0,1,1) model", 
+                          x = 'Months [1M]') # White Noise
+
+
+temp_fit %>%
+  select(sarima002_011) %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 24) # No Autocorrelation in the residuals
+
+
+# The selected models exhibit residuals resembling white noise and show no significant autocorrelation up to a lag of 24 months
+
+# The 4 selected candidate models 
+
+best_fit <- temp_train %>%
+  model(
+    sarima100_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,0) + PDQ(0,1,1)),
+    sarima001_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(0,0,1) + PDQ(0,1,1)),
+    sarima100_111 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,0) + PDQ(1,1,1)),
+    sarima101_111 = ARIMA(AvgTemperatureC ~ 0 + pdq(1,0,1) + PDQ(1,1,1)),
+    sarima002_011 = ARIMA(AvgTemperatureC ~ 0 + pdq(0,0,2) + PDQ(0,1,1))
+  )
+
+# Evaluating forecast accuracy
+
+accuracy_results <- best_fit %>% 
+  forecast(h='29 months') %>%
+  accuracy(temp_test)
+
+```
+
+To identify the optimal model, a thorough evaluation of various models was conducted, focusing on selecting the five models with the lowest AIC and BIC values for further analysis: SARIMA(1,0,0)(0,1,1), SARIMA(0,0,1)(0,1,1), SARIMA(1,0,0)(1,1,1), SARIMA(1,0,0)(1,1,1), and SARIMA(0,0,2)(0,1,1). These selections were made based on their ability to minimize information criteria. Subsequently, the residuals of these chosen models underwent the **Ljung-Box test**. The results indicated that none of the models exhibited significant autocorrelation in their residuals, suggesting that these residuals possess properties consistent with white noise. This implies that the selected models effectively capture the underlying patterns within the data.
+
+Following the evaluation, forecasts generated for the top five models were presented in Table 1. Among these, the **SARIMA(1,0,0)(1,1,1)** model was particularly noteworthy. A closer examination of the data confirmed its standout performance, with the lowest RMSE indicating a strong fit to the data. While its MAE is not the lowest, it remains relatively low, which is a positive indicator. The MPE is closer to zero compared to other models, suggesting a more accurate prediction without bias. Although the MAPE is slightly higher, it is still within an acceptable range. 
+
+```{r metrics-table, echo=FALSE,  out.width='30%', fig.align='center'}
+
+accuracy_table <- as.data.frame(accuracy_results)
+accuracy_table <- subset(accuracy_table, select = -c(ME, MASE, RMSSE, ACF1))
+
+knitr::kable(accuracy_table, caption = 'Error Measures on the Testing Sample', align = 'c')
+
+```
+
+# Conclusion
+
+In light of the comprehensive analysis, the **SARIMA(1,0,0)(1,1,1)** model emerged as the superior choice, striking an optimal balance between adherence to the training data and predictive precision for the test set. This model was selected for its adeptness in capturing the intricate seasonal patterns observed in the data. The forecasts generated by this model are depicted in *Figure 4*, showcasing its prediction prowess and the anticipated climatic trends for Lisbon. But here’s the thing: our climate is changing. Because of global warming, temperatures are all over the place, and what used to look like regular patterns might not be so reliable anymore. This shift is throwing a wrench in our ability to predict the future. Data that we used to count on to show us trends could now be just random blips because of how much the climate is changing. So, while our model is solid based on what we’ve seen before, we’ve got to be ready for some surprises when we try to guess what’s coming next.
+
+```{r temp-forecast, out.width='95%', fig.align='center', fig.cap = "Forecasted Average Temperature in Lisbon", fig.height = 5 }
+
+# Final Model 
+
+best_fit %>%
+  select(sarima100_111) %>%
+  forecast(h = '29 months') %>%
+  autoplot(temp_train, color='#FFA500',  level=FALSE) + labs(x = 'Months [1M]', y='Average Temperature (\u00B0C)') + theme_minimal() 
+
+```
+
+# References
+
+[1] Clair, Andrew. "posterdown: An R Package Built to Generate Conference Posters." GitHub, Brent Thorne, 16 Sept. 2021, <https://github.com/brentthorne/posterdown/wiki/posterdown_html>.
+
+[2] GeeksforGeeks. "Box-Jenkins Methodology for ARIMA Models." GeeksforGeeks, 5 Apr. 2020, <https://www.geeksforgeeks.org/box-jenkins-methodology-for-arima-models/>.
+
+[3] Kaggle. "Temperature of All Countries (1995-2020)." Kaggle, Subham Jain, <https://www.kaggle.com/datasets/subhamjain/temperature-of-all-countries-19952020>.
